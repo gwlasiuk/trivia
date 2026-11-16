@@ -26,7 +26,7 @@ if (pin) unlock(pin); else renderPin("");
 function renderPin(msg) {
   lastKey = null;
   $app.innerHTML = `<div class="grow"><h1 class="hero">Host controls</h1>
-    <input type="password" id="pin" inputmode="numeric" placeholder="Host PIN" aria-label="Host PIN" autocomplete="off">
+    <input type="text" id="pin" inputmode="text" placeholder="Host PIN" aria-label="Host PIN" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" autofocus>
     <p class="err" id="err" role="alert">${esc(msg)}</p><button class="btn" id="go">Unlock</button></div>`;
   const go = () => unlock(document.getElementById("pin").value.trim());
   document.getElementById("go").onclick = go;
