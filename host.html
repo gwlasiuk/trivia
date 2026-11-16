@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>Trivia host</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&family=Figtree:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="app" id="app" aria-live="polite"></main>
+<div class="status" id="status" hidden></div>
+<script src="config.js"></script>
+<script src="shared.js"></script>
+<script>
+const { esc, fmt, LETTERS } = Trivia;
+const $app = document.getElementById("app"), $status = document.getElementById("status");
+let pin = sessionStorage.getItem("trivia.pin") || "";
+let last = null, lastKey = null, busy = false, stop = null;
+
+if (pin) unlock(pin); else renderPin("");
+
+function renderPin(msg) {
+  lastKey = null;
+  $app.innerHTML = `<div class="grow"><h1 class="hero">Host controls</h1>
+    <input type="password" id="pin" inputmode="numeric" placeholder="Host PIN" aria-label="Host PIN" autocomplete="off">
+    <p class="err" id="err" role="alert">${esc(msg)}</p><button class="btn" id="go">Unlock</button></div>`;
+  const go = () => unlock(document.getElementById("pin").value.trim());
+  document.getElementById("go").onclick = go;
+  document.getElementById("pin").onkeydown = (e) => e.key === "Enter" && go();
+}
+
+async function unlock(p) {
+  try {
+    const r = await Trivia.call({ action: "host", pin: p, cmd: "ping" });
+    if (r.error) { sessionStorage.removeItem("trivia.pin"); return renderPin(r.error === "Wrong PIN" ? "That PIN isn't right." : r.error); }
+    pin = p; sessionStorage.setItem("trivia.pin", p);
+    if (stop) stop();
+    stop = Trivia.poll(() => ({ action: "state", pin }),
+      (s) => { $status.hidden = true; accept(s); },
+      (m) => { $status.textContent = "Connection trouble: " + m + " (retrying)"; $status.hidden = false; });
+    setInterval(tick, 250);
+  } catch (e) { renderPin("Couldn't reach the game server: " + e.message); }
+}
+
+function accept(s, force) {
+  last = s;
+  const key = s.ver + "|" + s.gameId + "|" + s.playerCount;
+  if (force || key !== lastKey) { lastKey = key; render(s); }
+  tick();
+}
+
+function nextLabel(s) {
+  switch (s.phase) {
+    case "lobby": return "Start game";
+    case "intro": return "Start round " + s.round;
+    case "question": return "Reveal answer";
+    case "reveal": return s.q < s.qTotal ? "Next question" : (s.round < s.totalRounds ? "Show leaderboard" : "Show final results");
+    case "leaderboard": return "Start round " + (s.round + 1);
+    default: return null;
+  }
+}
+
+function render(s) {
+  const label = nextLabel(s);
+  const names = { lobby: "Waiting for players", intro: "Round intro", question: "Question open", reveal: "Answer revealed", leaderboard: "Leaderboard", final: "Game over" };
+  const loc = s.round ? `Round ${s.round} of ${s.totalRounds}, ${esc(s.topic)}${s.q && ["question", "reveal"].includes(s.phase) ? `, question ${s.q} of ${s.qTotal}` : ""}` : "Not started";
+  let body = "";
+  if (s.question && ["question", "reveal"].includes(s.phase)) {
+    body = `<p class="qtext" style="font-size:24px">${esc(s.question.text)}</p><div class="choices" role="list">` +
+      s.question.choices.map((c, i) => {
+        const right = i === (s.phase === "reveal" ? s.correct : s.hostCorrect);
+        return `<div class="choice c${i}${right ? " right" : " dim"}" role="listitem" style="font-size:17px;padding:10px 14px"><span class="tag">${LETTERS[i]}</span><span>${esc(c)}</span>
+          ${s.phase === "reveal" ? `<span class="bar">${s.dist[i] || 0}</span>` : ""}</div>`;
+      }).join("") + `</div>`;
+    if (s.phase === "question") body = `<div class="meter" id="meter"><i id="fill"></i></div><p class="sub" id="ans"></p>` + body;
+  }
+  $app.innerHTML = `
+    <div class="topline"><span>${esc(s.title)}</span><span><b>${fmt(s.playerCount)}</b> players</span></div>
+    <div><span class="pill">${names[s.phase]}</span><h2 style="margin-top:12px;font-size:28px">${loc}</h2></div>
+    ${body}
+    ${label ? `<button class="btn" id="next">${label}</button>` : ""}
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:auto">
+      <a class="btn ghost" style="flex:1;text-align:center;text-decoration:none" href="display.html" target="_blank" rel="noopener">Open big screen</a>
+      <button class="btn ghost" id="reset" style="flex:1">${s.phase === "final" ? "Start a new game" : "Reset game"}</button>
+    </div>
+    <p class="err" id="err" role="alert"></p>`;
+  const n = document.getElementById("next");
+  if (n) n.onclick = () => run("next", n);
+  document.getElementById("reset").onclick = () => {
+    if (confirm("This clears all players and scores and returns to the lobby. Continue?")) run("reset");
+  };
+}
+
+async function run(cmd, btn) {
+  if (busy) return; busy = true; if (btn) btn.disabled = true;
+  try {
+    const r = await Trivia.call({ action: "host", pin, cmd });
+    if (r.error) { document.getElementById("err").textContent = r.error; if (btn) btn.disabled = false; }
+    else accept(r, true);
+  } catch (e) { document.getElementById("err").textContent = "Couldn't reach the server. Try again."; if (btn) btn.disabled = false; }
+  busy = false;
+}
+
+function tick() {
+  const s = last; if (!s || s.phase !== "question") return;
+  const fill = document.getElementById("fill"), ans = document.getElementById("ans");
+  if (!fill) return;
+  const wait = Trivia.untilStart(s);
+  if (wait > 0) { ans.textContent = "Starting in " + Math.ceil(wait) + "..."; fill.style.transform = "scaleX(1)"; return; }
+  const left = Trivia.remaining(s);
+  fill.style.transform = `scaleX(${left / s.duration})`;
+  document.getElementById("meter").classList.toggle("low", left < 5);
+  ans.textContent = `${s.answered || 0} of ${s.playerCount} answered, ${Math.ceil(left)}s left`;
+}
+</script>
+</body>
+</html>
