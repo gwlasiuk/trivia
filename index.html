@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#15123b">
+<title>Trivia Night</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&family=Figtree:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="app" id="app" aria-live="polite"><p class="sub">Loading...</p></main>
+<div class="status" id="status" hidden></div>
+<script src="config.js"></script>
+<script src="shared.js"></script>
+<script>
+const { esc, fmt, LETTERS, boardHTML } = Trivia;
+const $app = document.getElementById("app");
+const $status = document.getElementById("status");
+const KEY = "trivia.me";
+
+let me = null;
+try { me = JSON.parse(localStorage.getItem(KEY) || "null"); } catch (e) {}
+let last = null, lastKey = null, local = {}, notice = "";
+
+const saveMe = () => { try { me ? localStorage.setItem(KEY, JSON.stringify(me)) : localStorage.removeItem(KEY); } catch (e) {} };
+
+Trivia.poll(
+  () => ({ action: "state", pid: me ? me.pid : "" }),
+  (s) => {
+    $status.hidden = true;
+    if (me && s.gameId !== me.gameId) { me = null; saveMe(); }
+    last = s;
+    const key = !me ? "join|" + s.title
+      : [s.gameId, s.ver, JSON.stringify(s.me || {}), s.phase === "lobby" ? s.playerCount : ""].join("|");
+    if (key !== lastKey) { lastKey = key; render(s); }
+    document.title = s.title || "Trivia Night";
+    tick();
+  },
+  (msg) => { $status.textContent = "Connection trouble: " + msg + " (retrying)"; $status.hidden = false; }
+);
+setInterval(tick, 200);
+
+function render(s) {
+  if (!me) return renderJoin(s);
+  const fn = { lobby: rLobby, intro: rIntro, question: rQuestion, reveal: rReveal, leaderboard: rBoard, final: rFinal }[s.phase];
+  (fn || rLobby)(s);
+}
+
+function head(s) {
+  return `<div class="topline"><span>${esc(me.name)}</span><span>${s.round ? `Round <b>${s.round}</b> of ${s.totalRounds}` : ""}</span></div>`;
+}
+
+function renderJoin(s) {
+  $app.innerHTML = `
+    <div class="grow">
+      <h1 class="hero">${esc(s.title || "Trivia Night")}</h1>
+      <p class="sub">Pick a name for the leaderboard.</p>
+      <input type="text" id="name" maxlength="20" placeholder="Your name" autocomplete="nickname" autocapitalize="words" aria-label="Your name">
+      <p class="err" id="err" role="alert"></p>
+      <button class="btn" id="join">Join the game</button>
+    </div>`;
+  const input = document.getElementById("name"), btn = document.getElementById("join"), err = document.getElementById("err");
+  const go = async () => {
+    const name = input.value.trim();
+    if (!name) { err.textContent = "Enter a name to join."; return; }
+    btn.disabled = true; err.textContent = "";
+    try {
+      const r = await Trivia.call({ action: "join", name });
+      if (r.error) { err.textContent = r.error; btn.disabled = false; return; }
+      me = { pid: r.pid, name: r.name, gameId: r.gameId }; saveMe();
+      lastKey = null; render(last);
+    } catch (e) { err.textContent = "Couldn't connect. Check your signal and try again."; btn.disabled = false; }
+  };
+  btn.onclick = go;
+  input.onkeydown = (e) => { if (e.key === "Enter") go(); };
+}
+
+function rLobby(s) {
+  $app.innerHTML = `${head(s)}<div class="grow center">
+    <h1 class="hero">You're in, ${esc(me.name)}.</h1>
+    <p class="sub">${fmt(s.playerCount)} ${s.playerCount === 1 ? "player" : "players"} so far. The host will start the game soon.</p></div>`;
+}
+
+function rIntro(s) {
+  $app.innerHTML = `${head(s)}<div class="grow center">
+    <span class="pill">Round ${s.round} of ${s.totalRounds}</span>
+    <h1 class="hero">${esc(s.topic)}</h1>
+    <p class="sub">${s.qTotal} questions. Get ready.</p></div>`;
+}
+
+const myChoice = (s) => (s.me && s.me.answer) ? s.me.answer.choice : local[s.ri + "_" + s.qi];
+
+function rQuestion(s) {
+  const chosen = myChoice(s);
+  const btns = s.question.choices.map((c, i) => `
+    <button class="choice c${i}${chosen === i ? " picked" : ""}${chosen != null && chosen !== i ? " dim" : ""}" data-i="${i}" ${chosen != null ? "disabled" : ""}>
+      <span class="tag">${LETTERS[i]}</span><span>${esc(c)}</span></button>`).join("");
+  $app.innerHTML = `${head(s)}
+    <div class="topline"><span>${esc(s.topic)}</span><span>Question <b>${s.q}</b> of ${s.qTotal}</span></div>
+    <div id="ready" class="grow center" hidden><p class="sub">Get ready</p><div class="hero" id="cd">3</div></div>
+    <div id="qwrap" style="display:flex;flex-direction:column;gap:18px" hidden>
+      <div class="meter" id="meter"><i id="fill"></i></div>
+      <p class="qtext">${esc(s.question.text)}</p>
+      <div class="choices" id="choices">${btns}</div>
+      <p class="sub" id="msg">${chosen != null ? "Locked in. Waiting for the reveal." : ""}${esc(notice)}</p>
+    </div>`;
+  document.getElementById("choices").onclick = (e) => {
+    const b = e.target.closest(".choice"); if (b && !b.disabled) pick(Number(b.dataset.i));
+  };
+}
+
+async function pick(i) {
+  const s = last, k = s.ri + "_" + s.qi;
+  if (local[k] != null) return;
+  local[k] = i; notice = "";
+  lastKey = null; render(s);
+  try {
+    const r = await Trivia.call({ action: "answer", pid: me.pid, ri: s.ri, qi: s.qi, choice: i });
+    if (r.error && r.error !== "already") {
+      notice = r.error === "late" || r.error === "closed" ? " Too late, that one didn't count." : " Your answer didn't go through.";
+      lastKey = null; render(last);
+    }
+  } catch (e) { notice = " Connection hiccup. Your answer may not have counted."; lastKey = null; render(last); }
+}
+
+function tick() {
+  const s = last;
+  if (!s || s.phase !== "question" || !me) return;
+  const ready = document.getElementById("ready"), wrap = document.getElementById("qwrap");
+  if (!ready || !wrap) return;
+  const wait = Trivia.untilStart(s);
+  ready.hidden = wait <= 0; wrap.hidden = wait > 0;
+  if (wait > 0) { document.getElementById("cd").textContent = Math.ceil(wait); return; }
+  const left = Trivia.remaining(s);
+  document.getElementById("fill").style.transform = `scaleX(${left / s.duration})`;
+  document.getElementById("meter").classList.toggle("low", left < 5);
+  const msg = document.getElementById("msg");
+  if (left <= 0 && myChoice(s) == null) {
+    document.querySelectorAll(".choice").forEach((b) => (b.disabled = true));
+    msg.textContent = "Time's up. Waiting for the reveal.";
+  }
+}
+
+function rReveal(s) {
+  const a = s.me && s.me.answer, chosen = a ? a.choice : null;
+  let verdict, cls;
+  if (!a) { verdict = "No answer"; cls = "none"; }
+  else if (a.points > 0) { verdict = "Correct! +" + fmt(a.points); cls = "good"; }
+  else { verdict = "Not quite"; cls = "bad"; }
+  const btns = s.question.choices.map((c, i) => `
+    <div class="choice c${i}${i === s.correct ? " right" : " dim"}" role="listitem"><span class="tag">${LETTERS[i]}</span><span>${esc(c)}</span></div>`).join("");
+  const standing = s.me && s.me.rank ? `<p class="sub">You're <b>#${s.me.rank}</b> of ${s.me.of} with ${fmt(s.me.total)} points.</p>` : "";
+  $app.innerHTML = `${head(s)}<div class="verdict ${cls}">${verdict}</div>${standing}
+    <p class="qtext">${esc(s.question.text)}</p><div class="choices" role="list">${btns}</div>
+    <p class="sub">Waiting for the next question.</p>`;
+}
+
+function rBoard(s) {
+  $app.innerHTML = `${head(s)}<h2 class="hero" style="font-size:clamp(34px,10vw,52px)">Leaderboard after round ${s.round}</h2>
+    ${boardHTML(s.leaderboard, { limit: 10, you: me.name, delta: true })}
+    <p class="sub">Next up: round ${s.round + 1}.</p>`;
+}
+
+function rFinal(s) {
+  const mine = s.leaderboard.find((b) => b.name === me.name);
+  $app.innerHTML = `${head(s)}<h2 class="hero" style="font-size:clamp(38px,11vw,60px)">${s.leaderboard[0] ? esc(s.leaderboard[0].name) + " wins!" : "Final results"}</h2>
+    ${mine ? `<p class="sub">You finished <b>#${mine.rank}</b> with ${fmt(mine.total)} points. Thanks for playing.</p>` : ""}
+    ${boardHTML(s.leaderboard, { limit: 10, you: me.name })}`;
+}
+</script>
+</body>
+</html>
