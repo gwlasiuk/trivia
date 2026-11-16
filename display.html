@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trivia big screen</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&family=Figtree:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="tv">
+<main class="stage" id="app" aria-live="polite"></main>
+<div class="status" id="status" hidden></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="config.js"></script>
+<script src="shared.js"></script>
+<script>
+const { esc, fmt, LETTERS, boardHTML } = Trivia;
+const $app = document.getElementById("app"), $status = document.getElementById("status");
+const JOIN_URL = new URL("index.html", location.href).href.replace(/index\.html$/, "");
+let last = null, lastKey = null;
+
+Trivia.poll(() => ({ action: "state" }),
+  (s) => {
+    $status.hidden = true; last = s;
+    const key = s.gameId + "|" + s.ver + "|" + (s.phase === "lobby" ? s.playerCount : "");
+    if (key !== lastKey) { lastKey = key; render(s); }
+    tick();
+  },
+  (m) => { $status.textContent = "Connection trouble: " + m; $status.hidden = false; });
+setInterval(tick, 200);
+
+const header = (s) => `<div class="topline"><span>${esc(s.title)}</span><span>${s.round ? `Round <b>${s.round}</b> of ${s.totalRounds}, ${esc(s.topic)}` : ""}</span></div>`;
+
+function render(s) {
+  ({ lobby, intro, question, reveal, leaderboard, final }[s.phase] || lobby)(s);
+}
+
+function lobby(s) {
+  $app.innerHTML = `${header(s)}<div class="twocol" style="flex:1">
+    <div class="center" style="display:flex;flex-direction:column;gap:2vh">
+      <h1 class="hero" style="font-size:clamp(40px,6vw,100px)">Join on your phone</h1>
+      <div class="qr" id="qr" aria-label="QR code to join"></div>
+      <div class="url">${esc(JOIN_URL.replace(/^https?:\/\//, ""))}</div></div>
+    <div class="center" style="display:flex;flex-direction:column;gap:2vh">
+      <div class="big-count">${fmt(s.playerCount)}</div><div class="sub">${s.playerCount === 1 ? "player" : "players"} in</div>
+      <div class="chips">${(s.names || []).map((n) => `<span class="chip">${esc(n)}</span>`).join("")}</div></div></div>`;
+  if (window.QRCode) new QRCode(document.getElementById("qr"), { text: JOIN_URL, width: 260, height: 260, correctLevel: QRCode.CorrectLevel.M });
+}
+
+function intro(s) {
+  $app.innerHTML = `${header(s)}<div class="grow center"><span class="pill">Round ${s.round} of ${s.totalRounds}</span>
+    <h1 class="hero">${esc(s.topic)}</h1><p class="sub">${s.qTotal} questions</p></div>`;
+}
+
+function question(s) {
+  $app.innerHTML = `${header(s)}
+    <div id="ready" class="grow center" hidden><p class="sub">Question ${s.q}</p><div class="hero" id="cd">3</div></div>
+    <div id="qwrap" style="display:flex;flex-direction:column;gap:3vh;flex:1" hidden>
+      <div class="topline"><span>Question <b>${s.q}</b> of ${s.qTotal}</span><span id="ans"></span></div>
+      <div class="meter" id="meter"><i id="fill"></i></div>
+      <p class="qtext">${esc(s.question.text)}</p>
+      <div class="choices">${s.question.choices.map((c, i) => `<div class="choice c${i}"><span class="tag">${LETTERS[i]}</span><span>${esc(c)}</span></div>`).join("")}</div>
+    </div>`;
+}
+
+function reveal(s) {
+  const total = (s.dist || []).reduce((a, b) => a + b, 0) || 1;
+  $app.innerHTML = `${header(s)}<div class="topline"><span>Question <b>${s.q}</b> of ${s.qTotal}</span><span>${s.dist.reduce((a, b) => a + b, 0)} answered</span></div>
+    <p class="qtext">${esc(s.question.text)}</p>
+    <div class="choices">${s.question.choices.map((c, i) => `<div class="choice c${i}${i === s.correct ? " right" : " dim"}"><span class="tag">${LETTERS[i]}</span><span>${esc(c)}</span><span class="bar">${s.dist[i] || 0}</span></div>`).join("")}</div>`;
+}
+
+function leaderboard(s) {
+  $app.innerHTML = `${header(s)}<h2 class="hero" style="font-size:clamp(40px,6vw,96px)">Leaderboard after round ${s.round}</h2>
+    ${boardHTML(s.leaderboard, { limit: 10, delta: true })}`;
+}
+
+function final(s) {
+  const l = s.leaderboard, p = (i, c) => l[i] ? `<div class="step ${c}"><b>${esc(l[i].name)}</b>${fmt(l[i].total)}<div>#${l[i].rank}</div></div>` : "";
+  $app.innerHTML = `<div class="topline"><span>${esc(s.title)}</span><span>Final results</span></div>
+    <h1 class="hero" style="font-size:clamp(44px,7vw,120px)">${l[0] ? esc(l[0].name) + " wins!" : "Game over"}</h1>
+    <div class="podium">${p(1, "s2")}${p(0, "s1")}${p(2, "s3")}</div>
+    ${l.length > 3 ? boardHTML(l.slice(3), { limit: 7 }) : ""}`;
+}
+
+function tick() {
+  const s = last;
+  if (!s || s.phase !== "question") return;
+  const ready = document.getElementById("ready"), wrap = document.getElementById("qwrap");
+  if (!ready || !wrap) return;
+  const wait = Trivia.untilStart(s);
+  ready.hidden = wait <= 0; wrap.hidden = wait > 0;
+  if (wait > 0) { document.getElementById("cd").textContent = Math.ceil(wait); return; }
+  const left = Trivia.remaining(s);
+  document.getElementById("fill").style.transform = `scaleX(${left / s.duration})`;
+  document.getElementById("meter").classList.toggle("low", left < 5);
+  document.getElementById("ans").textContent = `${s.answered || 0} of ${s.playerCount} answered, ${Math.ceil(left)}s`;
+}
+</script>
+</body>
+</html>
