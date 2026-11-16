@@ -30,7 +30,7 @@ function renderPin(msg) {
     <p class="err" id="err" role="alert">${esc(msg)}</p><button class="btn" id="go">Unlock</button></div>`;
   const go = () => unlock(document.getElementById("pin").value.trim());
   document.getElementById("go").onclick = go;
-  document.getElementById("pin").onkeydown = (e) => e.key === "Enter" && go();
+  document.getElementById("pin").onkeydown = (e) => { if (e.key === "Enter") go(); };
 }
 
 async function unlock(p) {
