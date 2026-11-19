@@ -138,10 +138,7 @@ function tick() {
   document.getElementById("fill").style.transform = `scaleX(${left / s.duration})`;
   document.getElementById("meter").classList.toggle("low", left < 5);
   const msg = document.getElementById("msg");
-  if (left <= 0 && myChoice(s) == null) {
-    document.querySelectorAll(".choice").forEach((b) => (b.disabled = true));
-    msg.textContent = "Time's up. Waiting for the reveal.";
-  }
+  if (left <= 0 && myChoice(s) == null) msg.textContent = "Time's up, but you can still answer until the host reveals.";
 }
 
 function rReveal(s) {
